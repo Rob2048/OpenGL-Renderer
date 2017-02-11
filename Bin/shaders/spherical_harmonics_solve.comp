@@ -1,0 +1,90 @@
+#version 450
+
+#include "constants.inc"
+#include "env_map.inc"
+
+layout(local_size_x = 9, local_size_y = 1) in;
+
+layout(binding = 0) uniform sampler2D texEnvMap;
+
+layout(location = 1) uniform vec4 params;
+
+layout(rgba16f, binding = 0) uniform image2D img_output;
+
+float Harmonics(vec3 normal, int Index)
+{
+	float x = normal.x;
+	float y = normal.y;
+	float z = normal.z;
+
+	if(Index==0)
+	    return 1.0;
+	else if(Index==1)
+	    return y;
+	else if(Index==2)
+	    return z;
+	else if(Index==3)
+	    return x;
+	else if(Index==4)
+	    return x*y;
+	else if(Index==5)
+	    return y*z;
+	else if(Index==6)
+	    return 3.0*z*z - 1.0;
+	else if(Index==7)
+	    return x*z;
+	else
+	    return x*x - y*y;
+}
+
+mat3 GetRotMat(vec3 axis, float angle)
+{
+    axis = normalize(axis);
+    float s = sin(angle);
+    float c = cos(angle);
+    float oc = 1.0 - c;
+    
+    return mat3(oc * axis.x * axis.x + c,           oc * axis.x * axis.y - axis.z * s,  oc * axis.z * axis.x + axis.y * s,
+                oc * axis.x * axis.y + axis.z * s,  oc * axis.y * axis.y + c,           oc * axis.y * axis.z - axis.x * s,
+                oc * axis.z * axis.x - axis.y * s,  oc * axis.y * axis.z + axis.x * s,  oc * axis.z * axis.z + c);
+}
+
+void main()
+{
+	ivec2 pixel_coords = ivec2(gl_LocalInvocationID.xy);
+
+	//vec4 pixel = vec4(float(gl_LocalInvocationID.x) / 9.0, 0, 0, 1);
+	vec3 pixel = vec3(0.0);
+	float div = 0.0;
+
+	const float w = 64;
+	const float h = 32;
+
+	mat3 rot = GetRotMat(vec3(0, 1, 0), params.x);
+
+	for (int i = 0; i < w * h; ++i)
+	{
+		float x = mod(float(i), w);
+		float y = float(i) / w;
+		vec2 envCoord = vec2(x / w, y / h);
+
+		vec3 n = GetEnvMapNormal(envCoord);
+		//n = rot * n;
+		
+		// NOTE: Results look much better when linearly reconstructed when the harmonic is
+		// evaluated.
+		
+		//vec3 env = toLinear(textureLod(texEnvMap, envCoord, 5.0).rgb);
+		vec3 env = textureLod(texEnvMap, envCoord, 5.0).rgb;
+
+		pixel += Harmonics(n, pixel_coords.x) * env;// * -n.z;
+		//div += -n.z;
+	}
+
+	//pixel /= div;
+	pixel /= w * h;	
+
+	//pixel = (pixel) * 10;
+	
+	imageStore(img_output, pixel_coords, vec4(pixel, 0));
+}

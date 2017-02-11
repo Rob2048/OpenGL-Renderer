@@ -1,0 +1,13 @@
+#version 450
+
+layout(local_size_x = 1, local_size_y = 1) in;
+
+layout(r32ui, binding = 2) uniform uimage2D feedbackBuffer;
+
+void main()
+{
+	ivec2 coords = ivec2(gl_GlobalInvocationID.xy);
+
+	uint fbbPixel = (255 << 24);
+	imageStore(feedbackBuffer, coords, uvec4(fbbPixel, 0, 0, 0));
+}

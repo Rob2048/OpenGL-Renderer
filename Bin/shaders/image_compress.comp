@@ -1,0 +1,209 @@
+#version 450
+
+layout(local_size_x = 32, local_size_y = 32) in;
+
+struct packedRGBABlock_t
+{
+	uint pixels[16];
+};
+
+struct dxt5block_t
+{
+	uint alphaPalette;
+	uint alphaPixels;
+	uint rgbPalette;
+	uint rgbPixels;
+};
+
+layout(std430, binding = 0) buffer transInputBuffer
+{
+	readonly packedRGBABlock_t transInput[];
+};
+
+layout(std430, binding = 1) buffer transOutputBuffer
+{
+	dxt5block_t transOutput[];
+};
+
+void UnpackRGB(const uint Color, out uint R, out uint G, out uint B)
+{
+	R = Color & 0xFF;
+	G = (Color >> 8 ) & 0xFF;
+	B = (Color >> 16 );
+}
+
+vec3 UnpackRGBFloat(const uint Color)
+{
+	vec3 result;
+	result.r = float( Color & 0xFF );
+	result.g = float( ( Color >> 8 ) & 0xFF );
+	result.b = float( ( Color >> 16 ) );
+	return result;
+}
+
+void GetRGBMinMaxPCA(const uint colors[16], out uint minColor[3], out uint maxColor[3])
+{
+	// Average Color.
+	vec3 averageColor = vec3( 0.0 );
+	
+	for (int i = 0; i < 16; ++i)
+	{
+		averageColor += UnpackRGBFloat(colors[i]);
+	}
+	
+	averageColor /= 16.0;
+
+	// Covariance.
+	float covariance[] = { 0.0, 0.0, 0.0, 0.0, 0.0, 0.0 };
+	
+	for ( int i = 0; i < 16; ++i ) 
+	{
+		const vec3 rgb = UnpackRGBFloat(colors[ i ]) - averageColor;
+		covariance[ 0 ] += rgb[ 0 ] * rgb[ 0 ];
+		covariance[ 1 ] += rgb[ 0 ] * rgb[ 1 ];
+		covariance[ 2 ] += rgb[ 0 ] * rgb[ 2 ];
+		covariance[ 3 ] += rgb[ 1 ] * rgb[ 1 ];
+		covariance[ 4 ] += rgb[ 1 ] * rgb[ 2 ];
+		covariance[ 5 ] += rgb[ 2 ] * rgb[ 2 ];
+	}
+
+	const float eps = 0.001;
+	covariance[ 0 ] += eps;
+	covariance[ 3 ] += eps;
+	covariance[ 5 ] += eps;
+
+	vec3 axis = vec3( 0.577, 0.577, 0.577 );
+	const int numPowerIterations = 2;
+
+	for ( int i = 0; i < numPowerIterations; ++i ) 
+	{
+		const vec3 temp = vec3(
+		axis.r * covariance[ 0 ] + axis.g * covariance[ 1 ] + axis.b * covariance[ 2 ],
+		axis.r * covariance[ 1 ] + axis.g * covariance[ 3 ] + axis.b * covariance[ 4 ],
+		axis.r * covariance[ 2 ] + axis.g * covariance[ 4 ] + axis.b * covariance[ 5 ]
+		);
+		axis = normalize( temp );
+	}
+
+	float minDot = 1e38;
+	float maxDot = -1e38;
+
+	for ( int i = 0; i < 16; ++i ) 
+	{
+		const vec3 rgb = UnpackRGBFloat( colors[ i ] ) - averageColor;
+		const float product = dot( rgb, axis );
+		minDot = min( minDot, product );
+		maxDot = max( maxDot, product );
+	}
+
+	const float rNormSq = 1.0 / dot( axis, axis );
+
+	minColor[ 0 ] = uint( clamp( averageColor.x + minDot * rNormSq * axis.x, 0.0, 255.0 ) );
+	maxColor[ 0 ] = uint( clamp( averageColor.x + maxDot * rNormSq * axis.x, 0.0, 255.0 ) );
+	minColor[ 1 ] = uint( clamp( averageColor.y + minDot * rNormSq * axis.y, 0.0, 255.0 ) );
+	maxColor[ 1 ] = uint( clamp( averageColor.y + maxDot * rNormSq * axis.y, 0.0, 255.0 ) );
+	minColor[ 2 ] = uint( clamp( averageColor.z + minDot * rNormSq * axis.z, 0.0, 255.0 ) );
+	maxColor[ 2 ] = uint( clamp( averageColor.z + maxDot * rNormSq * axis.z, 0.0, 255.0 ) );
+}
+
+uint ColorPairTo565Swap(inout uint color1[3], inout uint color2[3])
+{
+	// NOTE: Swap the colors in accordance with the DXT spec.
+	// Also means we need to swap the colors as they go into the next phase.
+
+	const uint packedColor1 = ( ( color1[ 0 ] >> 3 ) << 11 ) | ( ( color1[ 1 ] >> 2 ) << 5 ) | ( color1[ 2 ] >> 3 );
+	const uint packedColor2 = ( ( color2[ 0 ] >> 3 ) << 11 ) | ( ( color2[ 1 ] >> 2 ) << 5 ) | ( color2[ 2 ] >> 3 );
+
+	if (packedColor1 > packedColor2) 
+	{
+		return (packedColor1 | (packedColor2 << 16));
+	}
+	else
+	{
+		for (int i = 0; i < 3; ++i) 
+		{
+			const uint temp = color1[i];
+			color1[i] = color2[i];
+			color2[i] = temp;
+		}
+
+		return (packedColor2 | (packedColor1 << 16));
+	}
+}
+
+uint EmitColorIndicesBloom(const uint blockColors[ 16 ], const uint minColor[ 3 ], const uint maxColor[ 3 ])
+{
+	ivec3 colors[ 4 ];
+	colors[ 0 ].x = int( maxColor[ 0 ] );
+	colors[ 0 ].y = int( maxColor[ 1 ] );
+	colors[ 0 ].z = int( maxColor[ 2 ] );
+	colors[ 1 ].x = int( minColor[ 0 ] );
+	colors[ 1 ].y = int( minColor[ 1 ] );
+	colors[ 1 ].z = int( minColor[ 2 ] );
+	colors[ 2 ].x = int( ( 2 * colors[ 0 ][ 0 ] + 1 * colors[ 1 ][ 0 ] ) / 3 );
+	colors[ 2 ].y = int( ( 2 * colors[ 0 ][ 1 ] + 1 * colors[ 1 ][ 1 ] ) / 3 );
+	colors[ 2 ].z = int( ( 2 * colors[ 0 ][ 2 ] + 1 * colors[ 1 ][ 2 ] ) / 3 );
+	colors[ 3 ].x = int( ( 1 * colors[ 0 ][ 0 ] + 2 * colors[ 1 ][ 0 ] ) / 3 );
+	colors[ 3 ].y = int( ( 1 * colors[ 0 ][ 1 ] + 2 * colors[ 1 ][ 1 ] ) / 3 );
+	colors[ 3 ].z = int( ( 1 * colors[ 0 ][ 2 ] + 2 * colors[ 1 ][ 2 ] ) / 3 );
+
+	const ivec3 dir = colors[ 0 ] - colors[ 1 ];
+	int stops[ 4 ];
+
+	for ( int i = 0; i < 4; ++i )
+	{
+		stops[ i ] = colors[ i ].x * dir.x + colors[ i ].y * dir.y + colors[ i ].z * dir.z;
+	}
+
+	const int c0Point = ( stops[ 1 ] + stops[ 3 ] ) >> 1;
+	const int halfPoint = ( stops[ 3 ] + stops[ 2 ] ) >> 1;
+	const int c3Point = ( stops[ 2 ] + stops[ 0 ] ) >> 1;
+	uint mask = 0;
+
+	for ( int i = 15 ; i >= 0; --i )
+	{
+		uint r, g, b;
+		UnpackRGB(blockColors[i], r, g, b);
+
+		const int product = int(r) * dir.x + int(g) * dir.y + int(b) * dir.z;
+		mask <<= 2;
+
+		if ( product < halfPoint ) 
+		{
+			mask |= uint( ( product < c0Point ) ? 1 : 3 );
+		}
+		else
+		{
+			mask |= uint( ( product < c3Point ) ? 2 : 0 );
+		}
+	}
+
+	return mask;
+}
+
+void EncodeBlockRGBAToDXT(const uint BlockIndex, const uint Input[16])
+ {
+	uint minColor[3];
+	uint maxColor[3];
+	GetRGBMinMaxPCA(Input, minColor, maxColor); 
+	transOutput[BlockIndex].rgbPalette = ColorPairTo565Swap(maxColor, minColor);
+	transOutput[BlockIndex].rgbPixels = EmitColorIndicesBloom(Input, minColor, maxColor);
+}
+
+void main()
+{
+	// TODO: Target is SRGB, how does writing to the data affect that?
+
+	//uint blockIndex = gl_GlobalInvocationID.y * 32 + gl_GlobalInvocationID.x;
+	uint blockIndex = gl_LocalInvocationID.y * 32 + gl_LocalInvocationID.x;
+
+	uint blockX = blockIndex % 32;
+	uint blockY = blockIndex / 32;
+
+	transOutput[blockIndex].alphaPalette = 0;
+	transOutput[blockIndex].alphaPixels = 0;
+	//transOutput[blockIndex].rgbPalette = 0xF8000000;
+	//transOutput[blockIndex].rgbPixels = 0x55555555;	
+
+	EncodeBlockRGBAToDXT(blockIndex, transInput[blockIndex].pixels);
+}

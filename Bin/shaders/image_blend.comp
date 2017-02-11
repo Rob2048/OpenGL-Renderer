@@ -1,0 +1,101 @@
+#version 450
+
+layout(local_size_x = 1, local_size_y = 1) in;
+
+layout(rgba8, binding = 0) uniform image2D img_output;
+
+layout(location = 0) uniform vec4 blendParams;
+
+layout(binding = 0) uniform sampler2D texSrc;
+layout(binding = 1) uniform sampler2D texDst;
+
+struct dxt5block_t
+{
+	// 16bytes : 4x4 pixel block
+	// 8bytes: alpha
+	// 8bytes: rgb
+
+	uint alpha_palette;
+	uint alpha_pixels;
+	uint rgb_palette;
+	uint rgb_pixels;
+};
+
+layout(std430, binding = 3) buffer texFinal_buffer
+{
+	dxt5block_t texFinalPixel[128 * 128];
+};
+
+layout(std430, binding = 4) buffer texBlendSrc_buffer
+{
+	//readonly uint texSrcPixel[128 * 128];
+	readonly dxt5block_t texSrcPixel[128 * 128];
+};
+
+layout(std430, binding = 5) buffer texBlendSrc2_buffer
+{
+	readonly dxt5block_t texSrc2Pixel[128 * 128];
+};
+
+void main()
+{
+	vec4 pixel = vec4(1, 0, 0, 1);
+
+	ivec2 pixel_coords = ivec2(gl_GlobalInvocationID.xy);
+
+	/*
+	vec2 uv = vec2(float(pixel_coords.x) / 128.0, float(pixel_coords.y) / 128.0);
+
+	vec4 tA = vec4(texture(texSrc, uv).rgb, 1.0);
+	vec4 tB = vec4(texture(texDst, uv).rgb, 1.0);
+
+	pixel = mix(tA, tB, blendParams.x);
+
+	uint packedRGB = texSrcPixel[pixel_coords.y * 128 + pixel_coords.x];
+
+	float r = float((packedRGB >> 0) & 0xFF) / 255.0;
+	float g = float((packedRGB >> 8) & 0xFF) / 255.0;
+	float b = float((packedRGB >> 16) & 0xFF) / 255.0;
+
+	pixel = vec4(r, g, b, 1);
+	*/
+
+	uint blockIdx = pixel_coords.y * 32 + pixel_coords.x;
+
+	texFinalPixel[blockIdx].alpha_palette = 0;
+	texFinalPixel[blockIdx].alpha_pixels = 0;
+	texFinalPixel[blockIdx].rgb_palette = 0x0000F81F;
+
+	// 0x00000000 - 0 - c2
+	// 0x55555555 - 1 - c1
+	// 0xAAAAAAAA - 2 - more c2
+	// 0xFFFFFFFF - 3 - more c1
+	//texFinalPixel[blockIdx].rgb_pixels = 0xAAAAAAAA;
+
+	dxt5block_t bA = texSrcPixel[blockIdx];
+	dxt5block_t bB = texSrc2Pixel[blockIdx];
+	dxt5block_t bD = bA;
+
+	int t = int(blendParams.x * 100.0);
+
+	//uint fraction = (bA.rgb_pixels - bB.rgb_pixels) / 10;
+	//bD.rgb_pixels = bB.rgb_pixels + fraction * blendT;
+
+	int aC1 = int(bA.rgb_palette & 0xFFFF);
+	int aC2 = int(bA.rgb_palette >> 16);
+
+	int bC1 = int(bB.rgb_palette & 0xFFFF);
+	int bC2 = int(bB.rgb_palette >> 16);
+
+	int c1Fract = (bC1 - aC1) / 100;
+	int c2Fract = (bC2 - aC2) / 100;
+
+	uint c1Lerp = uint(aC1 + c1Fract * t);
+	uint c2Lerp = uint(aC2 + c2Fract * t);
+
+	bD.rgb_palette = c1Lerp | (c2Lerp << 16);
+
+	texFinalPixel[blockIdx] = bD;
+
+	//imageStore(img_output, pixel_coords, pixel);
+}
