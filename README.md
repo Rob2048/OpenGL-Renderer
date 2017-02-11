@@ -14,10 +14,16 @@ from complete in any sense.
 5. Post processing: SSAO & Bloom with lens dirt
 6. Shader Hot Loading
 
+## Screenshots
+![Screenshot](Screenshots/shot2.png)
+![Screenshot](Screenshots/shot4.png)
+![Screenshot](Screenshots/shot3.png)
+![Screenshot](Screenshots/shot1.png)
+
 ## License
-** NOTE: The file '/Bin/models/Baron.obj' has been extracted from DOOM 2016, this is purely for educational purposes only.
+**NOTE: The file '/Bin/models/Baron.obj' has been extracted from DOOM 2016, this is purely for educational purposes only.
 Please do not distribute or re-use the model in your own projects. The rest of the assets have been created by myself or
-are in the public domain. **
+are in the public domain.**
 
 **Unlicense (http://unlicense.org) **
 
